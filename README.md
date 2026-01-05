@@ -1,5 +1,5 @@
 # TBDN
-Official repository of "Think Bright, Diffuse Nice: Enhancing In-Context Learning via Inductive-Bias Hint Instruction and Query Contrastive Decoding"
+Official repository of "Think Bright, Diffuse Nice: Enhancing T2I-ICL via Inductive-Bias Hint Instruction and Query Contrastive Decoding"
 
 # install torch
 conda create -n tbdn python=3.10.12

@@ -36,12 +36,11 @@ def main():
 
     args = parser.parse_args()
 
-    # 目录 & 缓存
     shot_dir = os.path.join(args.out_dir, f"shot_{args.shot}")
     shot_flux_dir = os.path.join(args.out_dir, f"shot_{args.shot}_flux")
 
-    ensure_dir(shot_dir)
-    ensure_dir(shot_flux_dir)
+    os.makedirs(shot_dir, exist_ok=True)
+    os.makedirs(shot_flux_dir, exist_ok=True)
 
     instruction = "I give you several words and pictures. First, please analyse what the next picture is. Then give me a " \
                   "detailed diffusion prompt to describe the next picture. Please only provide me the detailed prompt " \
@@ -93,8 +92,8 @@ def main():
     for task_id in args.task_id:
         task_dir = os.path.join(shot_dir, f"task_{task_id}")
         task_flux_dir = os.path.join(shot_flux_dir, f"task_{task_id}")
-        ensure_dir(task_dir)
-        ensure_dir(task_flux_dir)
+        os.makedirs(task_dir, exist_ok=True)
+        os.makedirs(task_flux_dir, exist_ok=True)
 
         # load CoBSAT dataset
         data_loader = load_dataset(
@@ -151,6 +150,23 @@ def main():
                                                       )
             images, _ = process_vision_info(full_messages)
 
+            full_inputs = processor(text=full_text, images=images, return_tensors="pt").to(lvlm.device)
+
+            gen_kwargs = dict(
+                max_new_tokens=128,
+                num_beams=1,
+                do_sample=True,
+                temperature=0.7,
+                top_p=0.9,
+                repetition_penalty=1.0,
+                pad_token_id=tokenizer.eos_token_id,
+                eos_token_id=tokenizer.eos_token_id,
+                return_dict_in_generate=True,
+                output_hidden_states=False,
+                use_cache=True,
+                output_attentions=False,
+                output_scores=False,
+            )
             if args.use_qcd:
                 messages = [{
                     "role": "system",
@@ -172,26 +188,7 @@ def main():
                                                      add_vision_id=True
                                                      )
                 inputs = processor(text=text, images=images, return_tensors="pt").to(lvlm.device)
-
-            full_inputs = processor(text=full_text, images=images, return_tensors="pt").to(lvlm.device)
-
-            gen_kwargs = dict(
-                max_new_tokens=128,
-                num_beams=1,
-                do_sample=True,
-                temperature=0.7,
-                top_p=0.9,
-                repetition_penalty=1.0,
-                pad_token_id=tokenizer.eos_token_id,
-                eos_token_id=tokenizer.eos_token_id,
-                return_dict_in_generate=True,
-                output_hidden_states=False,
-                use_cache=True,
-                output_attentions=False,
-                output_scores=False,
-            )
-            if args.use_qcd:
-                gen_kwargs['cd_inputs'] = inputs
+                gen_kwargs['input_ids_cd'] = inputs
                 gen_kwargs['cd_alpha'] = args.alpha
 
             start_time = time()
