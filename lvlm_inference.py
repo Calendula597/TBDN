@@ -10,91 +10,80 @@ import torch
 from qwen_vl_utils import process_vision_info
 from tqdm import tqdm
 
-from transformers import AutoProcessor, Qwen2VLForConditionalGeneration, Qwen2_5_VLForConditionalGeneration, InternVLForConditionalGeneration, AutoTokenizer
+from transformers import AutoProcessor, Qwen2VLForConditionalGeneration, Qwen2_5_VLForConditionalGeneration, \
+    InternVLForConditionalGeneration, AutoTokenizer
 
 from cobsat.load_dataset import load_dataset, get_prompt
+from qcd_sampling import evolve_qcd_sampling
 
 
-# ------------------------- 主流程 -------------------------
 def main():
     parser = argparse.ArgumentParser()
-    # 输出设置
-    parser.add_argument("--out_dir", default="/home/sdbdata/Lizhenpeng/experiment/glm4vbase_2shot",
-                        help="output directory")
-    parser.add_argument("--model_name", default='qwen2vl', type=str, choices=['qwen2vl', 'qwen2.5vl', 'internvl3'],
-                        help="model name")
-    parser.add_argument("--task_id", default=[1, 2, 3, 4, 5, 6, 7, 8, 9, 10], type=int, nargs='+', help="任务ID")
-    parser.add_argument("--shot", type=int, default=2, help="Few-shot数量")
+    # output setting
+    parser.add_argument("--out_dir", default="./qwen2vl_onlylvlm_2shot_qcd", help="output path")
+    # LVLM setting
+    parser.add_argument("--model_name", default="qwen2vl", choices=['qwen2vl', 'qwen2_5vl', 'internvl3'],
+                        help="LVLM model")
+    parser.add_argument("--use_qcd", default=True, type=bool, help="whether to use qcd")
+    parser.add_argument("--alpha", default=0.5, type=float, help="alpha value")
+
+    # CoBSAT setting
+    parser.add_argument("--task_id", default=[1, 2, 3, 4, 5, 6, 7, 8, 9, 10], type=int, nargs='+', help="task id")
+    parser.add_argument("--shot", type=int, default=4, help="number of shot")
     parser.add_argument("--prompt_type", default="default", type=str)
     parser.add_argument("--data_mode", default="default", type=str)
 
     args = parser.parse_args()
-    model_name = args.model
     shot_dir = os.path.join(args.out_dir, f"shot_{args.shot}")
     os.makedirs(shot_dir, exist_ok=True)
 
     instruction = "I give you several words and pictures. First, please analyse what the next picture is. Then give me a " \
                   "detailed diffusion prompt to describe the next picture. Please only provide me the detailed prompt " \
-                  "and start the answer with 'Create an image'. Note: " \
-                  "Focus mainly on understanding and following the meaning of the " \
-                  "final text when creating your description.\n\n"
+                  "and start the answer with 'Create an image'.\n\n"
 
-    tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen2-VL-7B-Instruct", local_files_only=True,
-                                              trust_remote_code=True)
-    processor = AutoProcessor.from_pretrained("Qwen/Qwen2-VL-7B-Instruct", local_files_only=True,
-                                              trust_remote_code=True)
-
-    if args.model == "qwen2vl":
+    if args.model_name == "qwen2vl":
         lvlm = Qwen2VLForConditionalGeneration.from_pretrained(
             "Qwen/Qwen2-VL-7B-Instruct", torch_dtype=torch.bfloat16, device_map="auto",
             attn_implementation="flash_attention_2",
             trust_remote_code=True,
         )
-    elif args.model == "qwen2_5vl":
+        tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen2-VL-7B-Instruct", trust_remote_code=True)
+        processor = AutoProcessor.from_pretrained("Qwen/Qwen2-VL-7B-Instruct", trust_remote_code=True)
+    elif args.model_name == "qwen2_5vl":
         lvlm = Qwen2_5_VLForConditionalGeneration.from_pretrained(
             "Qwen/Qwen2.5-VL-7B-Instruct", torch_dtype=torch.bfloat16, device_map="auto",
             attn_implementation="flash_attention_2",
             trust_remote_code=True,
         )
-    elif args.model == "internvl3":
+        tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen2.5-VL-7B-Instruct", trust_remote_code=True)
+        processor = AutoProcessor.from_pretrained("Qwen/Qwen2.5-VL-7B-Instruct", trust_remote_code=True)
+    elif args.model_name == "internvl3":
         lvlm = InternVLForConditionalGeneration.from_pretrained(
-            "InternLM/internlm-3b-vision", torch_dtype=torch.bfloat16, device_map="auto",
+            "OpenGVLab/InternVL3-8B-hf", torch_dtype=torch.bfloat16, device_map="auto",
             attn_implementation="flash_attention_2",
             trust_remote_code=True,
         )
+        tokenizer = AutoTokenizer.from_pretrained("OpenGVLab/InternVL3-8B-hf", trust_remote_code=True)
+        processor = AutoProcessor.from_pretrained("OpenGVLab/InternVL3-8B-hf", trust_remote_code=True)
     else:
         raise ValueError("Invalid model name")
     lvlm.eval()
 
-    gen_kwargs = dict(
-        max_new_tokens=128,
-        num_beams=1,
-        do_sample=True,
-        temperature=0.7,
-        top_p=0.9,
-        repetition_penalty=1.0,
-        pad_token_id=tokenizer.eos_token_id,
-        eos_token_id=tokenizer.eos_token_id,
-        return_dict_in_generate=True,
-        output_hidden_states=False,
-        use_cache=True,
-        output_attentions=False,
-        output_scores=False,
-    )
+    if args.use_qcd:
+        evolve_qcd_sampling()
+
     """
-        📂 文件夹结构说明
-        xx_shot/                 # 实验目录
+        📂
+        path_to_output/              
         │
-        └── task_x/                # 特征文件存放
-            ├── *.json 
-            └──  *.pth
+        └── shot_x/                  
+               └── *.json
     """
 
     for task_id in args.task_id:
         task_dir = os.path.join(shot_dir, f"task_{task_id}")
-        os.makedirs(shot_dir, exist_ok=True)
+        os.makedirs(task_dir, exist_ok=True)
 
-        # 初始化数据集
         data_loader = load_dataset(
             args.shot,
             args.prompt_type,
@@ -150,9 +139,48 @@ def main():
             images, _ = process_vision_info(messages)
             inputs = processor(text=text, images=images, return_tensors="pt").to(lvlm.device)
 
-            start_time = time()
+            gen_kwargs = dict(
+                max_new_tokens=128,
+                num_beams=1,
+                do_sample=True,
+                temperature=0.7,
+                top_p=0.9,
+                repetition_penalty=1.0,
+                pad_token_id=tokenizer.eos_token_id,
+                eos_token_id=tokenizer.eos_token_id,
+                return_dict_in_generate=True,
+                output_hidden_states=False,
+                use_cache=True,
+                output_attentions=False,
+                output_scores=False,
+            )
+            if args.use_qcd:
+                messages = [{
+                    "role": "system",
+                    "content": "You are a helpful assistant."
+                }, {
+                    "role":
+                        "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": instruction
+                        },
+                        *placeholders,
+                    ],
+                }]
+                text = processor.apply_chat_template(messages,
+                                                     tokenize=False,
+                                                     add_generation_prompt=True,
+                                                     add_vision_id=True
+                                                     )
+                inputs = processor(text=text, images=images, return_tensors="pt").to(lvlm.device)
+                gen_kwargs["input_ids_cd"] = inputs.input_ids
+                gen_kwargs['cd_alpha'] = args.alpha
 
-            outputs = lvlm.generate(**inputs, **gen_kwargs)
+            start_time = time()
+            with torch.inference_mode():
+                outputs = lvlm.generate(**inputs, **gen_kwargs)
 
             generated_ids_trimmed = [
                 out_ids[len(in_ids):] for in_ids, out_ids in zip(inputs.input_ids.cpu(), outputs['sequences'])

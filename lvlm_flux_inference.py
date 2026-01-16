@@ -10,15 +10,15 @@ from qwen_vl_utils import process_vision_info
 from tqdm import tqdm
 from transformers import AutoProcessor, Qwen2VLForConditionalGeneration, Qwen2_5_VLForConditionalGeneration, \
     InternVLForConditionalGeneration, AutoTokenizer
-
+from qcd_sampling import evolve_qcd_sampling
 
 def main():
     parser = argparse.ArgumentParser()
     # output setting
-    parser.add_argument("--out_dir", default="/path/to/output", help="output path")
+    parser.add_argument("--out_dir", default="./qwen2vl", help="output path")
     # LVLM setting
-    parser.add_argument("--model", default="qwen2vl", choices=['qwen2vl', 'qwen2_5vl', 'internvl3'], help="LVLM model")
-    parser.add_argument("--use_qcd", default=False, type=bool, help="whether to use qcd")
+    parser.add_argument("--model_name", default="qwen2vl", choices=['qwen2vl', 'qwen2_5vl', 'internvl3'], help="LVLM model")
+    parser.add_argument("--use_qcd", default=True, type=bool, help="whether to use qcd")
     parser.add_argument("--alpha", default=0.5, type=float, help="alpha value")
 
     # CoBSAT setting
@@ -32,7 +32,7 @@ def main():
     parser.add_argument("--height", type=int, default=256, help="image height")
     parser.add_argument("--width", type=int, default=256, help="image width")
     parser.add_argument("--num_inference_steps", type=int, default=28, help="number of inference steps")
-    parser.add_argument("--use_cpu_offload", type=bool, default=True, help="Whether to use CPU offload.")
+    parser.add_argument("--use_cpu_offload", type=bool, default=False, help="Whether to use CPU offload.")
 
     args = parser.parse_args()
 
@@ -46,27 +46,30 @@ def main():
                   "detailed diffusion prompt to describe the next picture. Please only provide me the detailed prompt " \
                   "and start the answer with 'Create an image'.\n\n"
 
-    tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen2-VL-7B-Instruct", trust_remote_code=True)
-    processor = AutoProcessor.from_pretrained("Qwen/Qwen2-VL-7B-Instruct", trust_remote_code=True)
-
-    if args.model == "qwen2vl":
+    if args.model_name == "qwen2vl":
         lvlm = Qwen2VLForConditionalGeneration.from_pretrained(
             "Qwen/Qwen2-VL-7B-Instruct", torch_dtype=torch.bfloat16, device_map="auto",
             attn_implementation="flash_attention_2",
             trust_remote_code=True,
         )
-    elif args.model == "qwen2_5vl":
+        tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen2-VL-7B-Instruct", trust_remote_code=True)
+        processor = AutoProcessor.from_pretrained("Qwen/Qwen2-VL-7B-Instruct", trust_remote_code=True)
+    elif args.model_name == "qwen2_5vl":
         lvlm = Qwen2_5_VLForConditionalGeneration.from_pretrained(
             "Qwen/Qwen2.5-VL-7B-Instruct", torch_dtype=torch.bfloat16, device_map="auto",
             attn_implementation="flash_attention_2",
             trust_remote_code=True,
         )
-    elif args.model == "internvl3":
+        tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen2.5-VL-7B-Instruct", trust_remote_code=True)
+        processor = AutoProcessor.from_pretrained("Qwen/Qwen2.5-VL-7B-Instruct", trust_remote_code=True)
+    elif args.model_name == "internvl3":
         lvlm = InternVLForConditionalGeneration.from_pretrained(
-            "InternLM/internlm-3b-vision", torch_dtype=torch.bfloat16, device_map="auto",
+            "OpenGVLab/InternVL3-8B-hf", torch_dtype=torch.bfloat16, device_map="auto",
             attn_implementation="flash_attention_2",
             trust_remote_code=True,
         )
+        tokenizer = AutoTokenizer.from_pretrained("OpenGVLab/InternVL3-8B-hf", trust_remote_code=True)
+        processor = AutoProcessor.from_pretrained("OpenGVLab/InternVL3-8B-hf", trust_remote_code=True)
     else:
         raise ValueError("Invalid model name")
 
@@ -74,19 +77,22 @@ def main():
 
     flux = FluxPipeline.from_pretrained(
         "black-forest-labs/FLUX.1-dev",
-        torch_dtype=torch.bfloat16
+        torch_dtype=torch.bfloat16,
     ).to(lvlm.device)
 
     if args.use_cpu_offload:
         flux.enable_model_cpu_offload()
-
+    if args.use_qcd:
+        evolve_qcd_sampling()
     """
-        📂 
-        path_to_output/                 # 实验目录
+        📂
+        path_to_output/              
         │
-        │└── shot_x/                # 特征文件存放
-            ├── *.json 
-            └──  *.pth
+        ├── shot_x/                  
+        │   └── *.json
+        │
+        └── shot_x_flux/             
+            └── *.jpg
     """
 
     for task_id in args.task_id:
@@ -188,7 +194,7 @@ def main():
                                                      add_vision_id=True
                                                      )
                 inputs = processor(text=text, images=images, return_tensors="pt").to(lvlm.device)
-                gen_kwargs['input_ids_cd'] = inputs
+                gen_kwargs["input_ids_cd"] = inputs.input_ids
                 gen_kwargs['cd_alpha'] = args.alpha
 
             start_time = time()
